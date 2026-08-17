@@ -41,6 +41,8 @@ DATA_FILE = os.environ.get("DATA_FILE", "botup_data.json")
 
 DEVELOPER = "@zyh011"
 PLATFORM_BOT = os.environ.get("PLATFORM_BOT", "zyh011_bot")
+# ايدي أدمن المنصة (أنت) — للأوامر الخاصة: إحصائيات + رسالة جماعية
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "7584371298"))
 # ===============================================
 
 logging.basicConfig(
@@ -509,6 +511,16 @@ async def owner_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     rec = DATA["bots"].get(str(uid))
 
+    # لمحة أوامر الأدمن (تبين لك أنت بس)
+    admin_hint = ""
+    if uid == ADMIN_ID:
+        admin_hint = (
+            "\n\n━━━━━━━━━━━━━\n"
+            "🔐 <b>أوامر الإدارة:</b>\n"
+            "/stats — عدد المستخدمين وحساباتهم\n"
+            "/broadcast — رسالة جماعية للكل"
+        )
+
     if rec and rec["token"] in RUNNING:
         try:
             me = await RUNNING[rec["token"]].bot.get_me()
@@ -519,7 +531,7 @@ async def owner_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✨ <b>عندك بوت شغّال!</b>\n\n"
             "الناس اللي بتبعتله رح توصلك رسائلهم فيه، وبترد عليهم "
             "من دون ما يعرفوا مين أنت.\n\n"
-            "بتقدر تفتح بوتك من الزر تحت 👇",
+            "بتقدر تفتح بوتك من الزر تحت 👇" + admin_hint,
             parse_mode=ParseMode.HTML,
             reply_markup=_owner_menu(True, uname),
         )
@@ -534,7 +546,7 @@ async def owner_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2️⃣ خد التوكن اللي بيعطيك ياه\n"
         "3️⃣ ابعتلي التوكن هون\n\n"
         "وأنا بشغّلك بوتك فوراً 🚀\n\n"
-        f"━━━━━━━━━━━━━\n👨‍💻 تطوير: {DEVELOPER}",
+        f"━━━━━━━━━━━━━\n👨‍💻 تطوير: {DEVELOPER}" + admin_hint,
         parse_mode=ParseMode.HTML,
         reply_markup=_owner_menu(False),
     )
@@ -608,9 +620,90 @@ async def owner_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ==================================================================
+#              أوامر أدمن المنصة (إحصائيات + رسالة جماعية)
+# ==================================================================
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    bots = DATA["bots"]
+    total = len(bots)
+    running = sum(1 for r in bots.values() if r["token"] in RUNNING)
+
+    lines = [f"📊 <b>إحصائيات المنصة</b>", "━━━━━━━━━━━━━"]
+    lines.append(f"👥 عدد المستخدمين: <b>{total}</b>")
+    lines.append(f"🟢 بوتات شغّالة: <b>{running}</b>")
+    lines.append("")
+    lines.append("<b>الحسابات:</b>")
+
+    # نعرض كل مستخدم مع ايديه ويوزر بوته
+    shown = 0
+    for owner_id, rec in bots.items():
+        if shown >= 50:
+            lines.append(f"... و{total - 50} غيرهم")
+            break
+        uname = "?"
+        app = RUNNING.get(rec["token"])
+        if app:
+            try:
+                me = await app.bot.get_me()
+                uname = f"@{me.username}"
+            except Exception:
+                uname = "متوقف"
+        lines.append(f"• <code>{owner_id}</code> — {uname}")
+        shown += 1
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    # الرسالة بعد الأمر
+    if not context.args and not (update.message.reply_to_message):
+        await update.message.reply_text(
+            "📢 <b>رسالة جماعية</b>\n\n"
+            "اكتب الرسالة بعد الأمر:\n"
+            "<code>/broadcast نص الرسالة</code>\n\n"
+            "أو رد بالأمر /broadcast على أي رسالة عشان تنبعت للكل.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # نجهّز النص
+    if update.message.reply_to_message:
+        text = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
+    else:
+        text = update.message.text.split(None, 1)[1]
+
+    if not text.strip():
+        await update.message.reply_text("الرسالة فاضية.")
+        return
+
+    bots = DATA["bots"]
+    status = await update.message.reply_text(f"⏳ عم ابعت لـ {len(bots)} مستخدم...")
+
+    sent, failed = 0, 0
+    for owner_id in list(bots.keys()):
+        try:
+            await context.bot.send_message(
+                chat_id=int(owner_id),
+                text=f"📢 <b>رسالة من إدارة المنصة</b>\n━━━━━━━━━━━━━\n{esc(text)}",
+                parse_mode=ParseMode.HTML,
+            )
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)  # عشان ما نتجاوز حدود تلغرام
+
+    await status.edit_text(f"✅ تم الإرسال.\n📨 وصلت: {sent}\n❌ فشلت: {failed}")
+
+
 def build_owner_app():
     app = ApplicationBuilder().token(OWNER_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", owner_start))
+    app.add_handler(CommandHandler("stats", admin_stats))
+    app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CallbackQueryHandler(owner_delete_cb, pattern="^delete_bot$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, owner_message))
     return app
