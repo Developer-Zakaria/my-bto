@@ -10,6 +10,8 @@ import json
 import os
 import re
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update
 from telegram.ext import (
@@ -208,11 +210,31 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"خطأ بالتوصيل: {e}")
 
 
+# ---------- سيرفر ويب صغير (عشان Render Web Service المجاني يرضى) ----------
+class _PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+    def log_message(self, *args):
+        pass  # ما نطبع طلبات الويب
+
+
+def start_web_server():
+    port = int(os.environ.get("PORT", "10000"))
+    server = HTTPServer(("0.0.0.0", port), _PingHandler)
+    server.serve_forever()
+
+
 def main():
     if not TOKEN or "حط_توكن" in TOKEN:
         raise SystemExit("⚠️ لازم تحط توكن البوت بمتغير BOT_TOKEN أو داخل الكود.")
     if ADMIN_ID == 0:
         raise SystemExit("⚠️ لازم تحط ايدي حسابك بمتغير ADMIN_ID.")
+
+    # نشغّل سيرفر الويب بخيط منفصل عشان Render يشوف المنفذ مفتوح
+    threading.Thread(target=start_web_server, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
     app.bot_data["store"] = load_data()
