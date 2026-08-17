@@ -233,6 +233,13 @@ def main():
     if ADMIN_ID == 0:
         raise SystemExit("⚠️ لازم تحط ايدي حسابك بمتغير ADMIN_ID.")
 
+    # نتأكد إنو في event loop بالخيط الرئيسي (يحل مشكلة نسخ بايثون الجديدة)
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
     # نشغّل سيرفر الويب بخيط منفصل عشان Render يشوف المنفذ مفتوح
     threading.Thread(target=start_web_server, daemon=True).start()
 
