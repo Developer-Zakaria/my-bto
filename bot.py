@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-🤖 بوت أب PRO — منصة إنشاء بوتات "الناس تحكيني" | تطوير: @zyh011
+🤖 بوت أب PRO+ — منصة إنشاء بوتات "الناس تحكيني" | تطوير: @zyh011
 
-تصميم احترافي 2026:
-  • قائمة أزرار سفلية دائمة (Reply Keyboard) سهلة الوصول
-  • لوحات تنقّل بأزرار مدمجة (Inline) للإعدادات
-  • تجربة سلسة: تعديل الرسائل بدل إرسالها من جديد
-  • تخزين دائم PostgreSQL
-  • رسائل توصل مع اسم/صورة المرسِل + أزرار سريعة
-  • رسالة ترويج ثابتة للزوار + زر المطوّر
-  • أوامر إدارة: إحصائيات + رسالة جماعية
+كل شي أزرار مدمجة (inline) — ما في أزرار سفلية بتبعت رسائل بالغلط.
 
-متغيرات: OWNER_BOT_TOKEN (إجباري), DATABASE_URL, ADMIN_ID, PLATFORM_BOT
+لوحة تحكم كاملة لصاحب البوت:
+  ✏️ رسالة الترحيب
+  🔗 منع الروابط (تشغيل/إيقاف)
+  ⏸ إيقاف استقبال الرسائل مؤقتاً
+  💤 رسالة "مشغول" التلقائية
+  👥 قائمة المستخدمين (أسماء + عدد رسائل)
+  🚫 المحظورين / المكتومين
+
+للأدمن: 📊 إحصائيات + 📢 رسالة جماعية
+تخزين دائم PostgreSQL.
 """
 
 import os
@@ -22,13 +24,7 @@ import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
@@ -60,18 +56,30 @@ LINK_PATTERN = re.compile(
 )
 TOKEN_PATTERN = re.compile(r"^\d{6,}:[A-Za-z0-9_\-]{30,}$")
 
-DEFAULT_WELCOME = "🌟 أهلاً وسهلاً!\nاكتب رسالتك هون ورح توصل واردّ عليك بأقرب وقت 💬"
-
-# نصوص أزرار القائمة السفلية (للزوار داخل بوت الطفل)
-BTN_MAKE_BOT = "🤖 اعمل بوتك"
-BTN_DEV = "👨‍💻 المطوّر"
+DEFAULT_WELCOME = "🌟 أهلاً وسهلاً!\nاكتب رسالتك هون ورح توصل وارُدّ عليك بأقرب وقت 💬"
+DEFAULT_BUSY = "🕓 صاحب البوت مشغول حالياً، رسالتك وصلت ورح يرد عليك قريباً."
 
 
 # ==================================================================
-#          طبقة التخزين: PostgreSQL أو ملف
+#          طبقة التخزين
 # ==================================================================
 USE_DB = bool(DATABASE_URL)
 _lock = threading.Lock()
+
+# القيم الافتراضية لأي سجل
+def _default_rec(token):
+    return {
+        "token": token,
+        "blocked": [],
+        "muted": [],
+        "welcome": "",
+        "busy_msg": "",
+        "users": {},          # {user_id(str): {"name": str, "count": int}}
+        "antilink": True,      # منع الروابط مفعّل
+        "paused": False,       # إيقاف الاستقبال
+        "busy": False,         # وضع مشغول (يرد رسالة تلقائية)
+    }
+
 
 if USE_DB:
     import psycopg
@@ -84,50 +92,31 @@ if USE_DB:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS bots (
-                    owner_id  TEXT PRIMARY KEY,
-                    token     TEXT NOT NULL,
-                    blocked   TEXT DEFAULT '[]',
-                    muted     TEXT DEFAULT '[]',
-                    welcome   TEXT DEFAULT '',
-                    users     TEXT DEFAULT '[]'
+                    owner_id TEXT PRIMARY KEY,
+                    data     TEXT NOT NULL
                 )
                 """
             )
-            # ترقية: نضيف عمود users لو الجدول قديم
-            try:
-                conn.execute("ALTER TABLE bots ADD COLUMN IF NOT EXISTS users TEXT DEFAULT '[]'")
-            except Exception:
-                pass
         log.info("✅ قاعدة البيانات جاهزة")
 
     def db_all_bots():
         out = {}
         with _db() as conn:
-            for row in conn.execute("SELECT owner_id, token, blocked, muted, welcome, users FROM bots"):
-                out[row[0]] = {
-                    "token": row[1],
-                    "blocked": json.loads(row[2] or "[]"),
-                    "muted": json.loads(row[3] or "[]"),
-                    "welcome": row[4] or "",
-                    "users": json.loads(row[5] or "[]"),
-                }
+            for row in conn.execute("SELECT owner_id, data FROM bots"):
+                try:
+                    out[row[0]] = json.loads(row[1])
+                except Exception:
+                    pass
         return out
 
     def db_upsert(owner_id, rec):
         with _db() as conn:
             conn.execute(
                 """
-                INSERT INTO bots (owner_id, token, blocked, muted, welcome, users)
-                VALUES (%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (owner_id) DO UPDATE SET
-                    token=EXCLUDED.token, blocked=EXCLUDED.blocked,
-                    muted=EXCLUDED.muted, welcome=EXCLUDED.welcome, users=EXCLUDED.users
+                INSERT INTO bots (owner_id, data) VALUES (%s,%s)
+                ON CONFLICT (owner_id) DO UPDATE SET data=EXCLUDED.data
                 """,
-                (
-                    str(owner_id), rec["token"],
-                    json.dumps(rec["blocked"]), json.dumps(rec["muted"]),
-                    rec.get("welcome", ""), json.dumps(rec.get("users", [])),
-                ),
+                (str(owner_id), json.dumps(rec, ensure_ascii=False)),
             )
 
     def db_delete(owner_id):
@@ -136,6 +125,17 @@ if USE_DB:
 
 
 DATA = {"bots": {}}
+
+
+def _normalize(rec):
+    """يتأكد إنو السجل فيه كل المفاتيح الجديدة"""
+    base = _default_rec(rec.get("token", ""))
+    for k, v in base.items():
+        rec.setdefault(k, v)
+    # ترقية: لو users كانت list قديمة، نحولها dict
+    if isinstance(rec.get("users"), list):
+        rec["users"] = {str(u): {"name": "?", "count": 0} for u in rec["users"]}
+    return rec
 
 
 def load_all():
@@ -150,12 +150,8 @@ def load_all():
             except Exception:
                 DATA = {"bots": {}}
         DATA.setdefault("bots", {})
-    # نتأكد إنو كل سجل فيه المفاتيح المطلوبة
     for r in DATA["bots"].values():
-        r.setdefault("blocked", [])
-        r.setdefault("muted", [])
-        r.setdefault("welcome", "")
-        r.setdefault("users", [])
+        _normalize(r)
     return DATA
 
 
@@ -192,6 +188,8 @@ MSG_MAP = {}
 PIC_STORE = {}
 _pic_counter = [0]
 MAIN_LOOP = None
+# صاحب بوت ينتظر إدخال (welcome / busy)
+AWAITING = {}   # owner_id -> "welcome" | "busy"
 
 
 def _store_pic(file_id):
@@ -211,44 +209,38 @@ def esc(text):
 
 
 # ==================================================================
-#            لوحات المفاتيح (Keyboards)
+#            لوحة تحكم صاحب البوت (كلها inline)
 # ==================================================================
-def visitor_reply_kb():
-    """قائمة سفلية دائمة للزوار داخل بوت الطفل"""
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(BTN_MAKE_BOT), KeyboardButton(BTN_DEV)]],
-        resize_keyboard=True,
-        input_field_placeholder="اكتب رسالتك هون...",
+def panel_kb(rec):
+    antilink = "🟢" if rec.get("antilink", True) else "🔴"
+    paused = "🔴 موقوف" if rec.get("paused") else "🟢 يستقبل"
+    busy = "🟢" if rec.get("busy") else "🔴"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ رسالة الترحيب", callback_data="p_welcome")],
+        [InlineKeyboardButton(f"🔗 منع الروابط {antilink}", callback_data="p_antilink")],
+        [InlineKeyboardButton(f"⏸ الاستقبال: {paused}", callback_data="p_pause")],
+        [InlineKeyboardButton(f"💤 وضع مشغول {busy}", callback_data="p_busy"),
+         InlineKeyboardButton("📝 نص المشغول", callback_data="p_busymsg")],
+        [InlineKeyboardButton("👥 المستخدمين", callback_data="p_users"),
+         InlineKeyboardButton("🚫 المحظورين", callback_data="p_blocked")],
+        [InlineKeyboardButton("🔄 تحديث", callback_data="p_refresh")],
+    ])
+
+
+def panel_text(rec):
+    total = len(rec.get("users", {}))
+    return (
+        "🎛 <b>لوحة تحكم بوتك</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"👥 المستخدمين: <b>{total}</b>\n"
+        f"🚫 محظورين: <b>{len(rec['blocked'])}</b>  •  🔇 مكتومين: <b>{len(rec['muted'])}</b>\n\n"
+        "• للرد على أي شخص: اعمل <b>reply</b> على رسالته.\n"
+        "• استعمل الأزرار للتحكم بكل شي 👇"
     )
 
 
-def owner_panel_reply_kb():
-    """قائمة سفلية دائمة لصاحب البوت"""
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("📊 إحصائياتي"), KeyboardButton("⚙️ الإعدادات")],
-            [KeyboardButton("📋 المحظورين")],
-        ],
-        resize_keyboard=True,
-        input_field_placeholder="ردّ على رسالة لتوصل للشخص...",
-    )
-
-
-def settings_inline_kb():
-    """لوحة إعدادات مدمجة لصاحب البوت"""
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("✏️ رسالة الترحيب", callback_data="set_welcome")],
-            [InlineKeyboardButton("🔙 رجوع", callback_data="close_panel")],
-        ]
-    )
-
-
-def branding_url_kb():
-    """أزرار مدمجة للترويج (بتنحط مع رسالة الزائر)"""
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🤖 اعمل بوتك الخاص مجاناً", url=f"https://t.me/{PLATFORM_BOT}")]]
-    )
+def back_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للوحة", callback_data="p_refresh")]])
 
 
 # ==================================================================
@@ -261,140 +253,130 @@ async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if uid == owner_id:
         await update.message.reply_text(
-            "🎛 <b>لوحة تحكم بوتك</b>\n"
-            "━━━━━━━━━━━━━━━\n"
-            "بوتك جاهز وشغّال ✅\n\n"
-            "• لما يبعتلك حدا، بتوصلك رسالته مع اسمه وأزرار سريعة.\n"
-            "• للرد: اعمل <b>reply</b> على رسالته.\n\n"
-            "استعمل القائمة تحت للتحكم السريع 👇",
-            parse_mode=ParseMode.HTML,
-            reply_markup=owner_panel_reply_kb(),
+            panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec)
         )
     else:
-        # نسجّل الزائر (للإحصائيات) بدون تكرار
-        if rec is not None and uid not in rec["users"]:
-            rec["users"].append(uid)
-            persist(owner_id)
+        _track_user(rec, uid, update.effective_user.full_name, owner_id, inc=False)
         welcome = (rec or {}).get("welcome") or DEFAULT_WELCOME
         await update.message.reply_text(
             welcome,
-            reply_markup=visitor_reply_kb(),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🤖 اعمل بوتك الخاص مجاناً", url=f"https://t.me/{PLATFORM_BOT}")]
+            ]),
         )
 
 
-async def child_owner_panel_text(update, context):
-    """أزرار القائمة السفلية لصاحب البوت"""
-    owner_id = context.bot_data["owner_id"]
-    if update.effective_user.id != owner_id:
-        return False
-    rec = _bot_record(owner_id)
-    txt = update.message.text
-
-    if txt == "📊 إحصائياتي":
-        total = len(rec.get("users", []))
-        blocked = len(rec["blocked"])
-        muted = len(rec["muted"])
-        await update.message.reply_text(
-            "📊 <b>إحصائيات بوتك</b>\n"
-            "━━━━━━━━━━━━━━━\n"
-            f"👥 عدد الأشخاص: <b>{total}</b>\n"
-            f"🚫 محظورين: <b>{blocked}</b>\n"
-            f"🔇 مكتومين: <b>{muted}</b>",
-            parse_mode=ParseMode.HTML,
-        )
-        return True
-
-    if txt == "⚙️ الإعدادات":
-        await update.message.reply_text(
-            "⚙️ <b>الإعدادات</b>\nاختر شو بدك تعدّل:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=settings_inline_kb(),
-        )
-        return True
-
-    if txt == "📋 المحظورين":
-        blocked = ", ".join(map(str, rec["blocked"])) or "لا يوجد"
-        muted = ", ".join(map(str, rec["muted"])) or "لا يوجد"
-        await update.message.reply_text(
-            f"🚫 <b>المحظورين:</b>\n{blocked}\n\n🔇 <b>المكتومين:</b>\n{muted}\n\n"
-            "لفك الحظر: <code>/unblock الايدي</code>\n"
-            "لفك الكتم: <code>/unmute الايدي</code>",
-            parse_mode=ParseMode.HTML,
-        )
-        return True
-
-    return False
+def _track_user(rec, uid, name, owner_id, inc=True):
+    if rec is None:
+        return
+    users = rec.setdefault("users", {})
+    key = str(uid)
+    if key not in users:
+        users[key] = {"name": name or "?", "count": 0}
+    else:
+        users[key]["name"] = name or users[key].get("name", "?")
+    if inc:
+        users[key]["count"] = users[key].get("count", 0) + 1
+    persist(owner_id)
 
 
-async def child_settings_cb(update, context):
+async def child_panel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """كل أزرار لوحة التحكم"""
     q = update.callback_query
     owner_id = context.bot_data["owner_id"]
     if q.from_user.id != owner_id:
         await q.answer("مش مسموح", show_alert=True)
         return
+    rec = _bot_record(owner_id)
     data = q.data
 
-    if data == "set_welcome":
-        context.bot_data.setdefault("awaiting_welcome", set()).add(owner_id)
+    if data == "p_refresh":
+        AWAITING.pop(owner_id, None)
         await q.answer()
+        try:
+            await q.edit_message_text(panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        except Exception:
+            await context.bot.send_message(owner_id, panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        return
+
+    if data == "p_welcome":
+        AWAITING[owner_id] = "welcome"
+        await q.answer()
+        cur = rec.get("welcome") or DEFAULT_WELCOME
         await q.edit_message_text(
-            "✏️ ابعتلي رسالة الترحيب الجديدة اللي بدك الزوار يشوفوها.\n\n"
-            "(ابعتها كرسالة عادية هلق)",
+            f"✏️ <b>رسالة الترحيب الحالية:</b>\n\n{esc(cur)}\n\n"
+            "ابعتلي الرسالة الجديدة كنص عادي 👇",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(),
         )
         return
 
-    if data == "close_panel":
+    if data == "p_busymsg":
+        AWAITING[owner_id] = "busy"
         await q.answer()
-        await q.edit_message_text("✅ تمام.")
+        cur = rec.get("busy_msg") or DEFAULT_BUSY
+        await q.edit_message_text(
+            f"📝 <b>رسالة المشغول الحالية:</b>\n\n{esc(cur)}\n\n"
+            "ابعتلي النص الجديد 👇",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(),
+        )
         return
 
-
-def _child_target_from_reply(update, token):
-    reply = update.message.reply_to_message
-    if not reply:
-        return None
-    return MSG_MAP.get(token, {}).get(reply.message_id)
-
-
-async def child_unblock(update, context):
-    owner_id = context.bot_data["owner_id"]
-    if update.effective_user.id != owner_id:
-        return
-    rec = _bot_record(owner_id)
-    if not context.args:
-        await update.message.reply_text("اكتب /unblock <id>")
-        return
-    try:
-        target = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("الايدي لازم يكون رقم")
-        return
-    if target in rec["blocked"]:
-        rec["blocked"].remove(target)
+    if data == "p_antilink":
+        rec["antilink"] = not rec.get("antilink", True)
         persist(owner_id)
-    await update.message.reply_text(f"✅ تم فك الحظر عن {target}")
+        await q.answer("تم التغيير ✅")
+        await q.edit_message_text(panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        return
 
-
-async def child_unmute(update, context):
-    owner_id = context.bot_data["owner_id"]
-    if update.effective_user.id != owner_id:
-        return
-    rec = _bot_record(owner_id)
-    if not context.args:
-        await update.message.reply_text("اكتب /unmute <id>")
-        return
-    try:
-        target = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("الايدي لازم يكون رقم")
-        return
-    if target in rec["muted"]:
-        rec["muted"].remove(target)
+    if data == "p_pause":
+        rec["paused"] = not rec.get("paused", False)
         persist(owner_id)
-    await update.message.reply_text(f"🔊 تم فك الكتم عن {target}")
+        await q.answer("⏸ موقوف" if rec["paused"] else "▶️ يستقبل")
+        await q.edit_message_text(panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        return
+
+    if data == "p_busy":
+        rec["busy"] = not rec.get("busy", False)
+        persist(owner_id)
+        await q.answer("💤 مشغول" if rec["busy"] else "✅ متاح")
+        await q.edit_message_text(panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        return
+
+    if data == "p_users":
+        await q.answer()
+        users = rec.get("users", {})
+        if not users:
+            body = "ما في مستخدمين بعد."
+        else:
+            # نرتّب حسب عدد الرسائل
+            items = sorted(users.items(), key=lambda x: x[1].get("count", 0), reverse=True)
+            lines = []
+            for i, (uid, info) in enumerate(items[:40], 1):
+                lines.append(f"{i}. {esc(info.get('name','?'))} — <code>{uid}</code> ({info.get('count',0)} رسالة)")
+            if len(items) > 40:
+                lines.append(f"... و{len(items)-40} غيرهم")
+            body = "\n".join(lines)
+        await q.edit_message_text(
+            f"👥 <b>مستخدمين بوتك ({len(users)})</b>\n━━━━━━━━━━━━━━━\n{body}",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(),
+        )
+        return
+
+    if data == "p_blocked":
+        await q.answer()
+        blocked = ", ".join(map(str, rec["blocked"])) or "لا يوجد"
+        muted = ", ".join(map(str, rec["muted"])) or "لا يوجد"
+        await q.edit_message_text(
+            f"🚫 <b>المحظورين:</b>\n{blocked}\n\n🔇 <b>المكتومين:</b>\n{muted}\n\n"
+            "لفك الحظر: <code>/unblock الايدي</code>\n"
+            "لفك الكتم: <code>/unmute الايدي</code>",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(),
+        )
+        return
 
 
-async def child_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def child_msg_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أزرار الصورة/الحظر/الكتم تحت كل رسالة"""
     q = update.callback_query
     owner_id = context.bot_data["owner_id"]
     if q.from_user.id != owner_id:
@@ -436,6 +418,44 @@ async def child_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+async def child_unblock(update, context):
+    owner_id = context.bot_data["owner_id"]
+    if update.effective_user.id != owner_id:
+        return
+    rec = _bot_record(owner_id)
+    if not context.args:
+        await update.message.reply_text("اكتب /unblock <id>")
+        return
+    try:
+        target = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("الايدي لازم يكون رقم")
+        return
+    if target in rec["blocked"]:
+        rec["blocked"].remove(target)
+        persist(owner_id)
+    await update.message.reply_text(f"✅ تم فك الحظر عن {target}")
+
+
+async def child_unmute(update, context):
+    owner_id = context.bot_data["owner_id"]
+    if update.effective_user.id != owner_id:
+        return
+    rec = _bot_record(owner_id)
+    if not context.args:
+        await update.message.reply_text("اكتب /unmute <id>")
+        return
+    try:
+        target = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("الايدي لازم يكون رقم")
+        return
+    if target in rec["muted"]:
+        rec["muted"].remove(target)
+        persist(owner_id)
+    await update.message.reply_text(f"🔊 تم فك الكتم عن {target}")
+
+
 async def child_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if msg is None:
@@ -448,17 +468,16 @@ async def child_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ====== صاحب البوت ======
     if msg.from_user.id == owner_id:
-        # هل ينتظر رسالة ترحيب جديدة؟
-        awaiting = context.bot_data.get("awaiting_welcome", set())
-        if owner_id in awaiting and msg.text and not msg.reply_to_message:
-            rec["welcome"] = msg.text
+        # ينتظر إدخال؟
+        pending = AWAITING.get(owner_id)
+        if pending and msg.text and not msg.reply_to_message:
+            if pending == "welcome":
+                rec["welcome"] = msg.text
+            elif pending == "busy":
+                rec["busy_msg"] = msg.text
             persist(owner_id)
-            awaiting.discard(owner_id)
-            await msg.reply_text("✅ تم تحديث رسالة الترحيب.")
-            return
-
-        # أزرار القائمة السفلية
-        if msg.text and await child_owner_panel_text(update, context):
+            AWAITING.pop(owner_id, None)
+            await msg.reply_text("✅ تم الحفظ.", reply_markup=back_kb())
             return
 
         # رد على رسالة زائر
@@ -478,18 +497,19 @@ async def child_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ====== زائر ======
     uid = msg.from_user.id
-    if rec is not None and uid not in rec["users"]:
-        rec["users"].append(uid)
-        persist(owner_id)
+    _track_user(rec, uid, msg.from_user.full_name, owner_id, inc=True)
 
-    log.info(f"📩 رسالة لبوت owner={owner_id} من زائر={uid}")
     if uid in rec["blocked"]:
         return
     if uid in rec["muted"]:
         return
 
+    # إيقاف مؤقت
+    if rec.get("paused"):
+        return
+
     text = msg.text or msg.caption or ""
-    if LINK_PATTERN.search(text):
+    if rec.get("antilink", True) and LINK_PATTERN.search(text):
         await msg.reply_text("🚫 ممنوع إرسال روابط.")
         return
 
@@ -506,12 +526,14 @@ async def child_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+        ucount = rec["users"].get(str(uid), {}).get("count", 0)
         header = (
             "📨 <b>رسالة جديدة</b>\n"
             "━━━━━━━━━━━━━━━\n"
             f"👤 <b>{full_name}</b>\n"
             f"🔗 {username}\n"
-            f"🆔 <code>{u.id}</code>"
+            f"🆔 <code>{u.id}</code>\n"
+            f"💬 رسائله: {ucount}"
         )
 
         buttons = []
@@ -521,21 +543,26 @@ async def child_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append(InlineKeyboardButton("🔇 كتم", callback_data=f"mut:{u.id}"))
 
         await context.bot.send_message(
-            chat_id=owner_id, text=header,
-            parse_mode=ParseMode.HTML,
+            chat_id=owner_id, text=header, parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([buttons]),
         )
-
         fwd = await context.bot.copy_message(
             chat_id=owner_id, from_chat_id=msg.chat_id, message_id=msg.message_id
         )
         MSG_MAP.setdefault(token, {})[fwd.message_id] = uid
-        log.info(f"   ✅ وصلت لصاحب البوت {owner_id}")
 
-        try:
-            await msg.set_reaction("✅")
-        except Exception:
-            pass
+        # وضع مشغول: رد تلقائي
+        if rec.get("busy"):
+            busy_msg = rec.get("busy_msg") or DEFAULT_BUSY
+            try:
+                await msg.reply_text(busy_msg)
+            except Exception:
+                pass
+        else:
+            try:
+                await msg.set_reaction("✅")
+            except Exception:
+                pass
     except Exception as e:
         log.error(f"خطأ بالتوصيل owner={owner_id}: {e}")
 
@@ -547,8 +574,8 @@ def build_child_app(token, owner_id):
     app.add_handler(CommandHandler("start", child_start))
     app.add_handler(CommandHandler("unblock", child_unblock))
     app.add_handler(CommandHandler("unmute", child_unmute))
-    app.add_handler(CallbackQueryHandler(child_buttons, pattern="^(pic|blk|mut):"))
-    app.add_handler(CallbackQueryHandler(child_settings_cb, pattern="^(set_welcome|close_panel)$"))
+    app.add_handler(CallbackQueryHandler(child_msg_buttons, pattern="^(pic|blk|mut):"))
+    app.add_handler(CallbackQueryHandler(child_panel_cb, pattern="^p_"))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, child_message))
     return app
 
@@ -587,7 +614,7 @@ async def stop_child_bot(token):
 # ==================================================================
 #                        البوت الرئيسي (المنصة)
 # ==================================================================
-def platform_main_kb(has_bot, bot_username=None, is_admin=False):
+def platform_kb(has_bot, bot_username=None, is_admin=False):
     rows = []
     if has_bot and bot_username:
         rows.append([InlineKeyboardButton(f"🚀 افتح بوتي @{bot_username}", url=f"https://t.me/{bot_username}")])
@@ -616,9 +643,9 @@ async def owner_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✨ <b>عندك بوت شغّال!</b>\n"
             "━━━━━━━━━━━━━━━\n"
             "الناس بتبعتله رسائل بتوصلك، وبترد عليهم بسرية.\n"
-            "افتح بوتك من الزر تحت 👇",
+            "افتح بوتك واكتب /start عشان تفتح لوحة التحكم الكاملة 👇",
             parse_mode=ParseMode.HTML,
-            reply_markup=platform_main_kb(True, uname, is_admin),
+            reply_markup=platform_kb(True, uname, is_admin),
         )
         return
 
@@ -634,7 +661,7 @@ async def owner_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "وبوتك بيشتغل فوراً 🚀\n\n"
         f"━━━━━━━━━━━━━━━\n👨‍💻 تطوير: {DEVELOPER}",
         parse_mode=ParseMode.HTML,
-        reply_markup=platform_main_kb(False, None, is_admin),
+        reply_markup=platform_kb(False, None, is_admin),
     )
 
 
@@ -704,7 +731,7 @@ async def owner_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     status = await msg.reply_text("⏳ عم شغّل بوتك...")
-    DATA["bots"][str(uid)] = {"token": text, "blocked": [], "muted": [], "welcome": "", "users": []}
+    DATA["bots"][str(uid)] = _default_rec(text)
     ok, info = await start_child_bot(text, uid)
 
     if ok:
@@ -713,7 +740,7 @@ async def owner_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ <b>تم بنجاح!</b>\n"
             "━━━━━━━━━━━━━━━\n"
             f"بوتك @{info} صار شغّال 🎉\n\n"
-            "افتحه واكتب /start، وخلي الناس يبعتولك — رح توصلك الرسائل.\n\n"
+            "افتحه واكتب /start عشان تفتح لوحة التحكم الكاملة.\n\n"
             f"👨‍💻 {DEVELOPER}",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(
@@ -730,12 +757,11 @@ async def owner_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# ---------- أوامر الإدارة ----------
 async def _send_admin_stats(bot, to_id):
     bots = DATA["bots"]
     total = len(bots)
     running = sum(1 for r in bots.values() if r["token"] in RUNNING)
-    total_users = sum(len(r.get("users", [])) for r in bots.values())
+    total_users = sum(len(r.get("users", {})) for r in bots.values())
 
     lines = [
         "📊 <b>إحصائيات المنصّة</b>",
@@ -759,7 +785,7 @@ async def _send_admin_stats(bot, to_id):
                 uname = f"@{me.username}"
             except Exception:
                 pass
-        ucount = len(rec.get("users", []))
+        ucount = len(rec.get("users", {}))
         lines.append(f"• <code>{owner_id}</code> — {uname} ({ucount} مستخدم)")
         shown += 1
 
@@ -777,18 +803,15 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not context.args and not update.message.reply_to_message:
         await update.message.reply_text(
-            "📢 <b>رسالة جماعية</b>\n\n"
-            "اكتب:\n<code>/broadcast نص الرسالة</code>\n"
+            "📢 <b>رسالة جماعية</b>\n\nاكتب:\n<code>/broadcast نص الرسالة</code>\n"
             "أو رد بـ /broadcast على رسالة.",
             parse_mode=ParseMode.HTML,
         )
         return
-
     if update.message.reply_to_message:
         text = update.message.reply_to_message.text or update.message.reply_to_message.caption or ""
     else:
         text = update.message.text.split(None, 1)[1]
-
     if not text.strip():
         await update.message.reply_text("الرسالة فاضية.")
         return
