@@ -69,7 +69,7 @@ BOT_TYPE_LABELS = {
     "tools": "🔧 بوت أدوات",
 }
 BOT_TYPE_ORDER = ["messages", "protection", "games", "casino", "broadcast", "fun", "tools"]
-IMPLEMENTED_BOT_TYPES = {"messages"}
+IMPLEMENTED_BOT_TYPES = set(BOT_TYPE_ORDER)
 
 
 def type_select_kb():
@@ -96,7 +96,8 @@ _lock = threading.Lock()
 def _default_rec(token):
     return {
         "token": token,
-        "bot_type": None,      # نوع البوت (messages / protection / ...)
+        "bot_type": None,      # نوع البوت (messages / protection / games / ...)
+        # بوت رسائل
         "blocked": [],
         "muted": [],
         "welcome": "",
@@ -105,6 +106,14 @@ def _default_rec(token):
         "antilink": True,      # منع الروابط مفعّل
         "paused": False,       # إيقاف الاستقبال
         "busy": False,         # وضع مشغول (يرد رسالة تلقائية)
+        # بوت حماية — إعدادات لكل مجموعة أضيف لها البوت
+        "groups": {},          # {chat_id(str): {...}}
+        # بوت ألعاب
+        "scores": {},          # {user_id(str): points(int)}
+        # بوت كازينو (نقاط وهمية فقط)
+        "casino": {"balances": {}, "last_daily": {}},
+        # بوت إذاعة
+        "broadcast_stats": {"last_sent": 0, "last_failed": 0, "last_at": ""},
     }
 
 
@@ -207,6 +216,14 @@ def _normalize(rec):
     # ترقية: لو users كانت list قديمة، نحولها dict
     if isinstance(rec.get("users"), list):
         rec["users"] = {str(u): {"name": "?", "count": 0} for u in rec["users"]}
+    # تعميق الترقية للمفاتيح المتداخلة (لسجلات كتبت قبل إضافة نوع بوت جديد)
+    rec.setdefault("casino", {})
+    rec["casino"].setdefault("balances", {})
+    rec["casino"].setdefault("last_daily", {})
+    rec.setdefault("broadcast_stats", {})
+    rec["broadcast_stats"].setdefault("last_sent", 0)
+    rec["broadcast_stats"].setdefault("last_failed", 0)
+    rec["broadcast_stats"].setdefault("last_at", "")
     return rec
 
 
@@ -319,11 +336,23 @@ def build_child_app(token, owner_id, bot_type):
     app.bot_data["bot_type"] = bot_type
 
     if bot_type == "messages":
-        from bots import messages_bot
-        messages_bot.register(app, owner_id, token)
+        from bots import messages_bot as mod
+    elif bot_type == "protection":
+        from bots import protection_bot as mod
+    elif bot_type == "games":
+        from bots import games_bot as mod
+    elif bot_type == "casino":
+        from bots import casino_bot as mod
+    elif bot_type == "broadcast":
+        from bots import broadcast_bot as mod
+    elif bot_type == "fun":
+        from bots import fun_bot as mod
+    elif bot_type == "tools":
+        from bots import tools_bot as mod
     else:
         raise ValueError(f"نوع البوت غير مدعوم بعد: {bot_type}")
 
+    mod.register(app, owner_id, token)
     return app
 
 
