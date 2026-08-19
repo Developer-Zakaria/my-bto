@@ -819,16 +819,28 @@ async def _send_admin_stats(bot, to_id):
         if shown >= 40:
             lines.append(f"... و{total - 40} غيرهم")
             break
-        uname = "متوقف"
+        bot_uname = "متوقف"
         app = RUNNING.get(rec["token"])
+        owner_handle = None
         if app:
             try:
                 me = await app.bot.get_me()
-                uname = f"@{me.username}"
+                bot_uname = f"@{me.username}"
             except Exception:
                 pass
+            # نحاول نجيب يوزر صاحب البوت
+            try:
+                chat = await app.bot.get_chat(int(owner_id))
+                if chat.username:
+                    owner_handle = f"@{chat.username}"
+                elif chat.full_name:
+                    owner_handle = esc(chat.full_name)
+            except Exception:
+                pass
+        # لو ما قدرنا نجيب اليوزر، نستعمل الايدي كبديل
+        who = owner_handle or f"<code>{owner_id}</code>"
         ucount = len(rec.get("users", {}))
-        lines.append(f"• <code>{owner_id}</code> — {uname} ({ucount} مستخدم)")
+        lines.append(f"• {who} — {bot_uname} ({ucount} مستخدم)")
         shown += 1
 
     await bot.send_message(chat_id=to_id, text="\n".join(lines), parse_mode=ParseMode.HTML)
