@@ -21,8 +21,8 @@ import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat
+from telegram.constants import ParseMode, ChatAction
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
@@ -70,6 +70,21 @@ BOT_TYPE_LABELS = {
 }
 BOT_TYPE_ORDER = ["messages", "protection", "games", "casino", "broadcast", "fun", "tools"]
 IMPLEMENTED_BOT_TYPES = set(BOT_TYPE_ORDER)
+
+# قائمة أوامر "/" اللي بتظهر بقائمة تلغرام لكل نوع بوت — تجربة استخدام احترافية
+BOT_TYPE_COMMANDS = {
+    "messages": [("start", "فتح البوت / لوحة التحكم"), ("unblock", "فك حظر شخص"), ("unmute", "فك كتم شخص")],
+    "protection": [
+        ("start", "تعليمات البوت"), ("settings", "إعدادات الحماية (بالمجموعة)"),
+        ("ban", "حظر (رد على رسالة)"), ("kick", "طرد (رد على رسالة)"),
+        ("mute", "كتم (رد على رسالة)"), ("warn", "تحذير (رد على رسالة)"),
+    ],
+    "games": [("start", "فتح قائمة الألعاب"), ("menu", "🎮 القائمة الرئيسية")],
+    "casino": [("start", "فتح الكازينو"), ("menu", "🎰 القائمة الرئيسية")],
+    "broadcast": [("start", "الاشتراك / لوحة الإذاعة")],
+    "fun": [("start", "فتح قائمة الترفيه"), ("menu", "🎉 القائمة الرئيسية")],
+    "tools": [("start", "فتح قائمة الأدوات"), ("menu", "🔧 القائمة الرئيسية")],
+}
 
 
 def type_select_kb():
@@ -363,6 +378,10 @@ async def start_child_bot(token, owner_id, bot_type):
     try:
         await app.initialize()
         me = await app.bot.get_me()
+        try:
+            await app.bot.set_my_commands(BOT_TYPE_COMMANDS.get(bot_type, [("start", "ابدأ")]))
+        except Exception:
+            pass
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
     except Exception as e:
@@ -424,14 +443,16 @@ async def owner_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    types_preview = "\n".join(f"  {label}" for label in BOT_TYPE_LABELS.values())
     await update.message.reply_text(
-        "🤖 <b>منصّة إنشاء بوتات تلغرام</b>\n"
+        "🤖 <b>منصّة بوت أب — اصنع بوت تلغرام بخطوة وحدة</b>\n"
         "━━━━━━━━━━━━━━━\n\n"
-        "اعمل بوتك الخاص بخطوة وحدة، تختار نوعه، وبيشتغل فوراً 🚀\n\n"
+        "اختار نوع بوتك من ٧ أنواع جاهزة، وبيشتغل فوراً بدون أي إعداد تقني 🚀\n\n"
+        f"<b>🧩 الأنواع المتاحة:</b>\n{types_preview}\n\n"
         "<b>📝 كيف تبدأ:</b>\n"
         "1️⃣ افتح @BotFather واكتب /newbot\n"
         "2️⃣ خد التوكن اللي بيعطيك ياه\n"
-        "3️⃣ ابعتلي التوكن هون\n\n"
+        "3️⃣ ابعتلي التوكن هون واختار النوع\n\n"
         f"━━━━━━━━━━━━━━━\n👨‍💻 تطوير: {DEVELOPER}",
         parse_mode=ParseMode.HTML,
         reply_markup=platform_kb(False, None, is_admin),
@@ -623,6 +644,7 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     bots = DATA["bots"]
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     status = await update.message.reply_text(f"⏳ عم ابعت لـ {len(bots)} مستخدم...")
     sent, failed = 0, 0
     for owner_id in list(bots.keys()):
@@ -692,6 +714,18 @@ async def run():
 
     owner_app = build_owner_app()
     await owner_app.initialize()
+    try:
+        await owner_app.bot.set_my_commands([BotCommand("start", "ابدأ / اصنع بوتك")])
+        await owner_app.bot.set_my_commands(
+            [
+                BotCommand("start", "ابدأ / اصنع بوتك"),
+                BotCommand("stats", "📊 إحصائيات المنصّة"),
+                BotCommand("broadcast", "📢 رسالة جماعية لكل الأصحاب"),
+            ],
+            scope=BotCommandScopeChat(chat_id=ADMIN_ID),
+        )
+    except Exception:
+        pass
     await owner_app.start()
     await owner_app.updater.start_polling(drop_pending_updates=True)
     log.info("✅ البوت الرئيسي شغّال")

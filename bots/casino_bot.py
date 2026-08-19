@@ -64,7 +64,7 @@ def main_menu_kb():
 
 
 def back_kb():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة", callback_data="cs_menu")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="cs_menu")]])
 
 
 async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -82,9 +82,19 @@ async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb())
 
 
+async def child_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    owner_id = context.bot_data["owner_id"]
+    rec = core._bot_record(owner_id)
+    bal = _get_balance(rec, update.effective_user.id)
+    core.persist(owner_id)
+    await update.message.reply_text(
+        f"🎰 <b>اختار لعبة تحت 👇</b>\n💰 رصيدك: {bal}", parse_mode=ParseMode.HTML, reply_markup=main_menu_kb()
+    )
+
+
 def _bet_kb(game):
     row = [InlineKeyboardButton(str(b), callback_data=f"cs_bet:{game}:{b}") for b in BET_TIERS]
-    return InlineKeyboardMarkup([row, [InlineKeyboardButton("🔙 القائمة", callback_data="cs_menu")]])
+    return InlineKeyboardMarkup([row, [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="cs_menu")]])
 
 
 def _dice_bet_kb():
@@ -94,7 +104,7 @@ def _dice_bet_kb():
             InlineKeyboardButton(f"فردي ({b})", callback_data=f"cs_dice:{b}:odd"),
             InlineKeyboardButton(f"زوجي ({b})", callback_data=f"cs_dice:{b}:even"),
         ])
-    rows.append([InlineKeyboardButton("🔙 القائمة", callback_data="cs_menu")])
+    rows.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="cs_menu")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -319,7 +329,7 @@ async def _play_slots(q, rec, owner_id, uid, bet):
         f"🎰 {' '.join(spin)}\n\n{outcome}\n💰 رصيدك: {total}\n\n{DISCLAIMER}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔁 كمان", callback_data="cs_bet_menu:slots")],
-            [InlineKeyboardButton("🔙 القائمة", callback_data="cs_menu")],
+            [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="cs_menu")],
         ]),
     )
 
@@ -339,7 +349,7 @@ async def _play_wheel(q, rec, owner_id, uid, bet):
         f"🎡 العجلة وقفت على x{mult}\n\n{outcome}\n💰 رصيدك: {total}\n\n{DISCLAIMER}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔁 كمان", callback_data="cs_bet_menu:wheel")],
-            [InlineKeyboardButton("🔙 القائمة", callback_data="cs_menu")],
+            [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="cs_menu")],
         ]),
     )
 
@@ -356,11 +366,12 @@ async def _play_dice(q, rec, owner_id, uid, bet, guess):
         f"🎲 النرد طلع: {roll} ({'زوجي' if is_even else 'فردي'})\n\n{outcome}\n💰 رصيدك: {total}\n\n{DISCLAIMER}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔁 كمان", callback_data="cs_dice_menu")],
-            [InlineKeyboardButton("🔙 القائمة", callback_data="cs_menu")],
+            [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="cs_menu")],
         ]),
     )
 
 
 def register(app, owner_id, token):
     app.add_handler(CommandHandler("start", child_start))
+    app.add_handler(CommandHandler("menu", child_menu))
     app.add_handler(CallbackQueryHandler(casino_cb, pattern="^cs_"))

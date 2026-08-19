@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode, ChatAction
 from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
@@ -91,6 +91,7 @@ async def panel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _do_broadcast(bot, owner_id, rec, source_msg):
     users = rec.get("users", {})
+    await bot.send_chat_action(chat_id=source_msg.chat_id, action=ChatAction.TYPING)
     status = await source_msg.reply_text(f"⏳ عم ابعت لـ {len(users)} مشترك...")
     sent, failed = 0, 0
     for uid in list(users.keys()):

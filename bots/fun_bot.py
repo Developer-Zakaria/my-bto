@@ -83,7 +83,7 @@ def main_menu_kb():
 
 
 def back_kb():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة", callback_data="fun_menu")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="fun_menu")]])
 
 
 async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -97,6 +97,12 @@ async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += core.promo_line()
 
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb())
+
+
+async def child_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎉 <b>اختار شي تحت 👇</b>", parse_mode=ParseMode.HTML, reply_markup=main_menu_kb()
+    )
 
 
 async def _show_menu(q):
@@ -183,5 +189,6 @@ async def fallback_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def register(app, owner_id, token):
     app.add_handler(CommandHandler("start", child_start))
+    app.add_handler(CommandHandler("menu", child_menu))
     app.add_handler(CallbackQueryHandler(fun_cb, pattern="^fun_"))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, fallback_message))

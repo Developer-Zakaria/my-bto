@@ -13,7 +13,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode, ChatAction
 from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
@@ -75,7 +75,7 @@ def main_menu_kb():
 
 
 def back_kb():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة", callback_data="tl_menu")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="tl_menu")]])
 
 
 async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -89,6 +89,12 @@ async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += core.promo_line()
 
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb())
+
+
+async def child_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔧 <b>اختار أداة تحت 👇</b>", parse_mode=ParseMode.HTML, reply_markup=main_menu_kb()
+    )
 
 
 async def tools_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,6 +208,7 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not (text.startswith("http://") or text.startswith("https://")):
             await msg.reply_text("❌ لازم يبدأ الرابط بـ http:// أو https://", reply_markup=back_kb())
             return
+        await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.TYPING)
         status = await msg.reply_text("⏳ عم اختصر الرابط...")
         try:
             loop = asyncio.get_running_loop()
@@ -213,6 +220,7 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if pending == "qr":
         TOOL_AWAITING.pop(session_key, None)
+        await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_PHOTO)
         qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(text)}"
         try:
             await context.bot.send_photo(chat_id=msg.chat_id, photo=qr_url, caption="📱 QR كودك جاهز", reply_markup=back_kb())
@@ -223,5 +231,6 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 def register(app, owner_id, token):
     app.add_handler(CommandHandler("start", child_start))
+    app.add_handler(CommandHandler("menu", child_menu))
     app.add_handler(CallbackQueryHandler(tools_cb, pattern="^tl_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_handler))

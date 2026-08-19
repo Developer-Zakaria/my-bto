@@ -41,7 +41,7 @@ def main_menu_kb():
 
 
 def back_kb():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 القائمة", callback_data="gm_menu")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="gm_menu")]])
 
 
 def _award(rec, owner_id, uid, pts):
@@ -63,6 +63,12 @@ async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += core.promo_line()
 
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb())
+
+
+async def child_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎮 <b>اختار لعبة تحت 👇</b>", parse_mode=ParseMode.HTML, reply_markup=main_menu_kb()
+    )
 
 
 # ---------------------------- تخمين رقم ----------------------------
@@ -117,7 +123,7 @@ async def _play_rps(q, rec, owner_id, uid, choice):
         f"أنت: {RPS_CHOICES[choice]}\nالبوت: {RPS_CHOICES[bot_choice]}\n\n{result} (+{pts} نقطة، مجموعك: {total})",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔁 كمان", callback_data="gm_rps_start")],
-            [InlineKeyboardButton("🔙 القائمة", callback_data="gm_menu")],
+            [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="gm_menu")],
         ]),
     )
 
@@ -168,7 +174,7 @@ def _xo_kb(board):
             label = board[i] if board[i] != " " else "▫️"
             row.append(InlineKeyboardButton(label, callback_data=f"gm_xo:{i}"))
         rows.append(row)
-    rows.append([InlineKeyboardButton("🔙 القائمة", callback_data="gm_menu")])
+    rows.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="gm_menu")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -268,14 +274,14 @@ async def games_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer("✅ صح! +5 نقطة")
             await q.edit_message_text(f"✅ إجابة صحيحة! مجموعك: {total}", reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❓ سؤال تاني", callback_data="gm_trivia_start")],
-                [InlineKeyboardButton("🔙 القائمة", callback_data="gm_menu")],
+                [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="gm_menu")],
             ]))
         else:
             correct_ans = item["opts"][item["correct"]]
             await q.answer("❌ غلط")
             await q.edit_message_text(f"❌ غلط! الجواب الصحيح: {correct_ans}", reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❓ سؤال تاني", callback_data="gm_trivia_start")],
-                [InlineKeyboardButton("🔙 القائمة", callback_data="gm_menu")],
+                [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="gm_menu")],
             ]))
         return
 
@@ -315,5 +321,6 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 def register(app, owner_id, token):
     app.add_handler(CommandHandler("start", child_start))
+    app.add_handler(CommandHandler("menu", child_menu))
     app.add_handler(CallbackQueryHandler(games_cb, pattern="^gm_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_handler))
