@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-🤖 بوت أب PRO+ — منصة إنشاء بوتات تلغرام | تطوير: @zyh011
+🤖 بوت أب PRO+ — منصة إنشاء بوتات "الناس تحكيني" | تطوير: @zyh011
 
 كل شي أزرار مدمجة (inline) — ما في أزرار سفلية بتبعت رسائل بالغلط.
 
-المستخدم يختار نوع بوته عند الإنشاء (بوت رسائل، حماية، ألعاب، كازينو،
-إذاعة، ترفيه، أدوات). كل نوع بملفه الخاص جوا مجلد bots/.
+لوحة تحكم كاملة لصاحب البوت:
+  ✏️ رسالة الترحيب
+  🔗 منع الروابط (تشغيل/إيقاف)
+  ⏸ إيقاف استقبال الرسائل مؤقتاً
+  💤 رسالة "مشغول" التلقائية
+  👥 قائمة المستخدمين (أسماء + عدد رسائل)
+  🚫 المحظورين / المكتومين
 
-هذا الملف (bot.py) هو المنسّق: طبقة التخزين المشتركة، البوت الرئيسي
-(المنصة)، وتشغيل/إيقاف بوتات الأطفال حسب نوعها.
-
+للأدمن: 📊 إحصائيات + 📢 رسالة جماعية
 تخزين دائم PostgreSQL.
 """
 
@@ -21,8 +24,8 @@ import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat
-from telegram.constants import ParseMode, ChatAction
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
@@ -56,50 +59,6 @@ TOKEN_PATTERN = re.compile(r"^\d{6,}:[A-Za-z0-9_\-]{30,}$")
 DEFAULT_WELCOME = "🌟 أهلاً وسهلاً!\nاكتب رسالتك هون ورح توصل وارُدّ عليك بأقرب وقت 💬"
 DEFAULT_BUSY = "🕓 صاحب البوت مشغول حالياً، رسالتك وصلت ورح يرد عليك قريباً."
 
-# ==================================================================
-#            أنواع البوتات المتاحة بالمنصّة
-# ==================================================================
-BOT_TYPE_LABELS = {
-    "messages": "💬 بوت رسائل",
-    "protection": "🛡️ بوت حماية",
-    "games": "🎮 بوت ألعاب",
-    "casino": "🎲 بوت كازينو (نقاط)",
-    "broadcast": "📢 بوت إذاعة",
-    "fun": "🎉 بوت ترفيه",
-    "tools": "🔧 بوت أدوات",
-}
-BOT_TYPE_ORDER = ["messages", "protection", "games", "casino", "broadcast", "fun", "tools"]
-IMPLEMENTED_BOT_TYPES = set(BOT_TYPE_ORDER)
-
-# قائمة أوامر "/" اللي بتظهر بقائمة تلغرام لكل نوع بوت — تجربة استخدام احترافية
-BOT_TYPE_COMMANDS = {
-    "messages": [("start", "فتح البوت / لوحة التحكم"), ("unblock", "فك حظر شخص"), ("unmute", "فك كتم شخص")],
-    "protection": [
-        ("start", "تعليمات البوت"), ("settings", "إعدادات الحماية (بالمجموعة)"),
-        ("ban", "حظر (رد على رسالة)"), ("kick", "طرد (رد على رسالة)"),
-        ("mute", "كتم (رد على رسالة)"), ("warn", "تحذير (رد على رسالة)"),
-    ],
-    "games": [("start", "فتح قائمة الألعاب"), ("menu", "🎮 القائمة الرئيسية")],
-    "casino": [("start", "فتح الكازينو"), ("menu", "🎰 القائمة الرئيسية")],
-    "broadcast": [("start", "الاشتراك / لوحة الإذاعة")],
-    "fun": [("start", "فتح قائمة الترفيه"), ("menu", "🎉 القائمة الرئيسية")],
-    "tools": [("start", "فتح قائمة الأدوات"), ("menu", "🔧 القائمة الرئيسية")],
-}
-
-
-def type_select_kb():
-    rows = []
-    for key in BOT_TYPE_ORDER:
-        label = BOT_TYPE_LABELS[key]
-        if key not in IMPLEMENTED_BOT_TYPES:
-            label += " 🔜"
-        rows.append([InlineKeyboardButton(label, callback_data=f"type:{key}")])
-    return InlineKeyboardMarkup(rows)
-
-
-# owner_id -> توكن ينتظر اختيار نوع البوت
-PENDING_TOKEN = {}
-
 
 # ==================================================================
 #          طبقة التخزين
@@ -111,8 +70,6 @@ _lock = threading.Lock()
 def _default_rec(token):
     return {
         "token": token,
-        "bot_type": None,      # نوع البوت (messages / protection / games / ...)
-        # بوت رسائل
         "blocked": [],
         "muted": [],
         "welcome": "",
@@ -121,14 +78,6 @@ def _default_rec(token):
         "antilink": True,      # منع الروابط مفعّل
         "paused": False,       # إيقاف الاستقبال
         "busy": False,         # وضع مشغول (يرد رسالة تلقائية)
-        # بوت حماية — إعدادات لكل مجموعة أضيف لها البوت
-        "groups": {},          # {chat_id(str): {...}}
-        # بوت ألعاب
-        "scores": {},          # {user_id(str): points(int)}
-        # بوت كازينو (نقاط وهمية فقط)
-        "casino": {"balances": {}, "last_daily": {}},
-        # بوت إذاعة
-        "broadcast_stats": {"last_sent": 0, "last_failed": 0, "last_at": ""},
     }
 
 
@@ -225,20 +174,9 @@ def _normalize(rec):
     base = _default_rec(rec.get("token", ""))
     for k, v in base.items():
         rec.setdefault(k, v)
-    # سجلات قديمة بلا bot_type كانت كلها بوت رسائل قبل ما ينضاف اختيار النوع
-    if not rec.get("bot_type"):
-        rec["bot_type"] = "messages"
     # ترقية: لو users كانت list قديمة، نحولها dict
     if isinstance(rec.get("users"), list):
         rec["users"] = {str(u): {"name": "?", "count": 0} for u in rec["users"]}
-    # تعميق الترقية للمفاتيح المتداخلة (لسجلات كتبت قبل إضافة نوع بوت جديد)
-    rec.setdefault("casino", {})
-    rec["casino"].setdefault("balances", {})
-    rec["casino"].setdefault("last_daily", {})
-    rec.setdefault("broadcast_stats", {})
-    rec["broadcast_stats"].setdefault("last_sent", 0)
-    rec["broadcast_stats"].setdefault("last_failed", 0)
-    rec["broadcast_stats"].setdefault("last_at", "")
     return rec
 
 
@@ -312,6 +250,64 @@ def esc(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# ==================================================================
+#            لوحة تحكم صاحب البوت (كلها inline)
+# ==================================================================
+def panel_kb(rec):
+    antilink = "🟢" if rec.get("antilink", True) else "🔴"
+    paused = "🔴 موقوف" if rec.get("paused") else "🟢 يستقبل"
+    busy = "🟢" if rec.get("busy") else "🔴"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ رسالة الترحيب", callback_data="p_welcome")],
+        [InlineKeyboardButton(f"🔗 منع الروابط {antilink}", callback_data="p_antilink")],
+        [InlineKeyboardButton(f"⏸ الاستقبال: {paused}", callback_data="p_pause")],
+        [InlineKeyboardButton(f"💤 وضع مشغول {busy}", callback_data="p_busy"),
+         InlineKeyboardButton("📝 نص المشغول", callback_data="p_busymsg")],
+        [InlineKeyboardButton("👥 المستخدمين", callback_data="p_users"),
+         InlineKeyboardButton("🚫 المحظورين", callback_data="p_blocked")],
+        [InlineKeyboardButton("🔄 تحديث", callback_data="p_refresh")],
+    ])
+
+
+def panel_text(rec):
+    total = len(rec.get("users", {}))
+    return (
+        "🎛 <b>لوحة تحكم بوتك</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"👥 المستخدمين: <b>{total}</b>\n"
+        f"🚫 محظورين: <b>{len(rec['blocked'])}</b>  •  🔇 مكتومين: <b>{len(rec['muted'])}</b>\n\n"
+        "• للرد على أي شخص: اعمل <b>reply</b> على رسالته.\n"
+        "• استعمل الأزرار للتحكم بكل شي 👇"
+    )
+
+
+def back_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع للوحة", callback_data="p_refresh")]])
+
+
+# ==================================================================
+#                    بوت الطفل
+# ==================================================================
+async def child_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    owner_id = context.bot_data["owner_id"]
+    uid = update.effective_user.id
+    rec = _bot_record(owner_id)
+
+    if uid == owner_id:
+        await update.message.reply_text(
+            panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec)
+        )
+    else:
+        _track_user(rec, uid, update.effective_user.full_name, owner_id, inc=False)
+        welcome = (rec or {}).get("welcome") or DEFAULT_WELCOME
+        await update.message.reply_text(
+            welcome,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🤖 اعمل بوتك الخاص مجاناً", url=f"https://t.me/{PLATFORM_BOT}")]
+            ]),
+        )
+
+
 def _track_user(rec, uid, name, owner_id, inc=True):
     if rec is None:
         return
@@ -326,62 +322,313 @@ def _track_user(rec, uid, name, owner_id, inc=True):
     persist(owner_id)
 
 
-# ==================================================================
-#     الإعلان التلقائي الثابت — بيظهر بكل بوت متصنّع، أي نوع كان
-#     (مو قابل للتعطيل من صاحب البوت)
-# ==================================================================
-def promo_kb():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🤖 اصنع بوتك الخاص", url=f"https://t.me/{PLATFORM_BOT}")],
-        [InlineKeyboardButton("👨‍💻 صانع البوتات", url=f"https://t.me/{DEVELOPER.lstrip('@')}")],
-    ])
+async def child_panel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """كل أزرار لوحة التحكم"""
+    q = update.callback_query
+    owner_id = context.bot_data["owner_id"]
+    if q.from_user.id != owner_id:
+        await q.answer("مش مسموح", show_alert=True)
+        return
+    rec = _bot_record(owner_id)
+    data = q.data
+
+    if data == "p_refresh":
+        AWAITING.pop(owner_id, None)
+        await q.answer()
+        try:
+            await q.edit_message_text(panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        except Exception:
+            await context.bot.send_message(owner_id, panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        return
+
+    if data == "p_welcome":
+        AWAITING[owner_id] = "welcome"
+        await q.answer()
+        cur = rec.get("welcome") or DEFAULT_WELCOME
+        await q.edit_message_text(
+            f"✏️ <b>رسالة الترحيب الحالية:</b>\n\n{esc(cur)}\n\n"
+            "ابعتلي الرسالة الجديدة كنص عادي 👇",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(),
+        )
+        return
+
+    if data == "p_busymsg":
+        AWAITING[owner_id] = "busy"
+        await q.answer()
+        cur = rec.get("busy_msg") or DEFAULT_BUSY
+        await q.edit_message_text(
+            f"📝 <b>رسالة المشغول الحالية:</b>\n\n{esc(cur)}\n\n"
+            "ابعتلي النص الجديد 👇",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(),
+        )
+        return
+
+    if data == "p_antilink":
+        rec["antilink"] = not rec.get("antilink", True)
+        persist(owner_id)
+        await q.answer("تم التغيير ✅")
+        await q.edit_message_text(panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        return
+
+    if data == "p_pause":
+        rec["paused"] = not rec.get("paused", False)
+        persist(owner_id)
+        await q.answer("⏸ موقوف" if rec["paused"] else "▶️ يستقبل")
+        await q.edit_message_text(panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        return
+
+    if data == "p_busy":
+        rec["busy"] = not rec.get("busy", False)
+        persist(owner_id)
+        await q.answer("💤 مشغول" if rec["busy"] else "✅ متاح")
+        await q.edit_message_text(panel_text(rec), parse_mode=ParseMode.HTML, reply_markup=panel_kb(rec))
+        return
+
+    if data == "p_users":
+        await q.answer()
+        users = rec.get("users", {})
+        if not users:
+            body = "ما في مستخدمين بعد."
+        else:
+            # نرتّب حسب عدد الرسائل
+            items = sorted(users.items(), key=lambda x: x[1].get("count", 0), reverse=True)
+            lines = []
+            for i, (uid, info) in enumerate(items[:40], 1):
+                lines.append(f"{i}. {esc(info.get('name','?'))} — <code>{uid}</code> ({info.get('count',0)} رسالة)")
+            if len(items) > 40:
+                lines.append(f"... و{len(items)-40} غيرهم")
+            body = "\n".join(lines)
+        await q.edit_message_text(
+            f"👥 <b>مستخدمين بوتك ({len(users)})</b>\n━━━━━━━━━━━━━━━\n{body}",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(),
+        )
+        return
+
+    if data == "p_blocked":
+        await q.answer()
+        blocked = ", ".join(map(str, rec["blocked"])) or "لا يوجد"
+        muted = ", ".join(map(str, rec["muted"])) or "لا يوجد"
+        await q.edit_message_text(
+            f"🚫 <b>المحظورين:</b>\n{blocked}\n\n🔇 <b>المكتومين:</b>\n{muted}\n\n"
+            "لفك الحظر: <code>/unblock الايدي</code>\n"
+            "لفك الكتم: <code>/unmute الايدي</code>",
+            parse_mode=ParseMode.HTML, reply_markup=back_kb(),
+        )
+        return
 
 
-def promo_line():
-    return f"\n\n⚡ هذا البوت صُنع عبر @{PLATFORM_BOT}"
+async def child_msg_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أزرار الصورة/الحظر/الكتم تحت كل رسالة"""
+    q = update.callback_query
+    owner_id = context.bot_data["owner_id"]
+    if q.from_user.id != owner_id:
+        await q.answer("مش مسموح", show_alert=True)
+        return
+    rec = _bot_record(owner_id)
+    data = q.data or ""
+
+    if data.startswith("pic:"):
+        file_id = PIC_STORE.get(data[4:])
+        if not file_id:
+            await q.answer("الصورة مش متوفرة", show_alert=True)
+            return
+        try:
+            await context.bot.send_photo(chat_id=owner_id, photo=file_id, caption="🖼 صورة المرسِل")
+            await q.answer()
+        except Exception:
+            await q.answer("ما قدرت أفتح الصورة", show_alert=True)
+        return
+
+    if data.startswith("blk:"):
+        target = int(data[4:])
+        if target not in rec["blocked"]:
+            rec["blocked"].append(target)
+            persist(owner_id)
+        await q.answer("🚫 تم الحظر")
+        try:
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    if data.startswith("mut:"):
+        target = int(data[4:])
+        if target not in rec["muted"]:
+            rec["muted"].append(target)
+            persist(owner_id)
+        await q.answer("🔇 تم الكتم")
+        return
 
 
-# ==================================================================
-#              تشغيل/إيقاف بوتات الأطفال حسب نوعها
-# ==================================================================
-def build_child_app(token, owner_id, bot_type):
+async def child_unblock(update, context):
+    owner_id = context.bot_data["owner_id"]
+    if update.effective_user.id != owner_id:
+        return
+    rec = _bot_record(owner_id)
+    if not context.args:
+        await update.message.reply_text("اكتب /unblock <id>")
+        return
+    try:
+        target = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("الايدي لازم يكون رقم")
+        return
+    if target in rec["blocked"]:
+        rec["blocked"].remove(target)
+        persist(owner_id)
+    await update.message.reply_text(f"✅ تم فك الحظر عن {target}")
+
+
+async def child_unmute(update, context):
+    owner_id = context.bot_data["owner_id"]
+    if update.effective_user.id != owner_id:
+        return
+    rec = _bot_record(owner_id)
+    if not context.args:
+        await update.message.reply_text("اكتب /unmute <id>")
+        return
+    try:
+        target = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("الايدي لازم يكون رقم")
+        return
+    if target in rec["muted"]:
+        rec["muted"].remove(target)
+        persist(owner_id)
+    await update.message.reply_text(f"🔊 تم فك الكتم عن {target}")
+
+
+async def child_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if msg is None:
+        return
+    owner_id = context.bot_data["owner_id"]
+    token = context.bot_data["token"]
+    rec = _bot_record(owner_id)
+    if rec is None:
+        return
+
+    # ====== صاحب البوت ======
+    if msg.from_user.id == owner_id:
+        # ينتظر إدخال؟
+        pending = AWAITING.get(owner_id)
+        if pending and msg.text and not msg.reply_to_message:
+            if pending == "welcome":
+                rec["welcome"] = msg.text
+            elif pending == "busy":
+                rec["busy_msg"] = msg.text
+            persist(owner_id)
+            AWAITING.pop(owner_id, None)
+            await msg.reply_text("✅ تم الحفظ.", reply_markup=back_kb())
+            return
+
+        # رد على رسالة زائر
+        if msg.reply_to_message:
+            target = MSG_MAP.get(token, {}).get(msg.reply_to_message.message_id)
+            if target:
+                try:
+                    await context.bot.copy_message(
+                        chat_id=target, from_chat_id=msg.chat_id, message_id=msg.message_id
+                    )
+                    await msg.set_reaction("👍")
+                except Exception as e:
+                    await msg.reply_text(f"ما قدرت ابعت الرد: {e}")
+            else:
+                await msg.reply_text("↩️ رد على رسالة الشخص نفسها عشان يوصله ردك.")
+        return
+
+    # ====== زائر ======
+    uid = msg.from_user.id
+    _track_user(rec, uid, msg.from_user.full_name, owner_id, inc=True)
+
+    if uid in rec["blocked"]:
+        return
+    if uid in rec["muted"]:
+        return
+
+    # إيقاف مؤقت
+    if rec.get("paused"):
+        return
+
+    text = msg.text or msg.caption or ""
+    if rec.get("antilink", True) and LINK_PATTERN.search(text):
+        await msg.reply_text("🚫 ممنوع إرسال روابط.")
+        return
+
+    try:
+        u = msg.from_user
+        full_name = esc(u.full_name) or "بدون اسم"
+        username = f"@{u.username}" if u.username else "—"
+
+        pic_file_id = None
+        try:
+            photos = await context.bot.get_user_profile_photos(u.id, limit=1)
+            if photos.total_count > 0:
+                pic_file_id = photos.photos[0][0].file_id
+        except Exception:
+            pass
+
+        ucount = rec["users"].get(str(uid), {}).get("count", 0)
+        header = (
+            "📨 <b>رسالة جديدة</b>\n"
+            "━━━━━━━━━━━━━━━\n"
+            f"👤 <b>{full_name}</b>\n"
+            f"🔗 {username}\n"
+            f"🆔 <code>{u.id}</code>\n"
+            f"💬 رسائله: {ucount}"
+        )
+
+        buttons = []
+        if pic_file_id:
+            buttons.append(InlineKeyboardButton("🖼", callback_data=f"pic:{_store_pic(pic_file_id)}"))
+        buttons.append(InlineKeyboardButton("🚫 حظر", callback_data=f"blk:{u.id}"))
+        buttons.append(InlineKeyboardButton("🔇 كتم", callback_data=f"mut:{u.id}"))
+
+        await context.bot.send_message(
+            chat_id=owner_id, text=header, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([buttons]),
+        )
+        fwd = await context.bot.copy_message(
+            chat_id=owner_id, from_chat_id=msg.chat_id, message_id=msg.message_id
+        )
+        MSG_MAP.setdefault(token, {})[fwd.message_id] = uid
+
+        # وضع مشغول: رد تلقائي
+        if rec.get("busy"):
+            busy_msg = rec.get("busy_msg") or DEFAULT_BUSY
+            try:
+                await msg.reply_text(busy_msg)
+            except Exception:
+                pass
+        else:
+            try:
+                await msg.set_reaction("✅")
+            except Exception:
+                pass
+    except Exception as e:
+        log.error(f"خطأ بالتوصيل owner={owner_id}: {e}")
+
+
+def build_child_app(token, owner_id):
     app = ApplicationBuilder().token(token).build()
     app.bot_data["owner_id"] = int(owner_id)
     app.bot_data["token"] = token
-    app.bot_data["bot_type"] = bot_type
-
-    if bot_type == "messages":
-        from bots import messages_bot as mod
-    elif bot_type == "protection":
-        from bots import protection_bot as mod
-    elif bot_type == "games":
-        from bots import games_bot as mod
-    elif bot_type == "casino":
-        from bots import casino_bot as mod
-    elif bot_type == "broadcast":
-        from bots import broadcast_bot as mod
-    elif bot_type == "fun":
-        from bots import fun_bot as mod
-    elif bot_type == "tools":
-        from bots import tools_bot as mod
-    else:
-        raise ValueError(f"نوع البوت غير مدعوم بعد: {bot_type}")
-
-    mod.register(app, owner_id, token)
+    app.add_handler(CommandHandler("start", child_start))
+    app.add_handler(CommandHandler("unblock", child_unblock))
+    app.add_handler(CommandHandler("unmute", child_unmute))
+    app.add_handler(CallbackQueryHandler(child_msg_buttons, pattern="^(pic|blk|mut):"))
+    app.add_handler(CallbackQueryHandler(child_panel_cb, pattern="^p_"))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, child_message))
     return app
 
 
-async def start_child_bot(token, owner_id, bot_type):
+async def start_child_bot(token, owner_id):
     if token in RUNNING:
         return True, "شغّال أصلاً"
-    app = build_child_app(token, int(owner_id), bot_type)
+    app = build_child_app(token, int(owner_id))
     try:
         await app.initialize()
         me = await app.bot.get_me()
-        try:
-            await app.bot.set_my_commands(BOT_TYPE_COMMANDS.get(bot_type, [("start", "ابدأ")]))
-        except Exception:
-            pass
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
     except Exception as e:
@@ -437,22 +684,23 @@ async def owner_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✨ <b>عندك بوت شغّال!</b>\n"
             "━━━━━━━━━━━━━━━\n"
+            "الناس بتبعتله رسائل بتوصلك، وبترد عليهم بسرية.\n"
             "افتح بوتك واكتب /start عشان تفتح لوحة التحكم الكاملة 👇",
             parse_mode=ParseMode.HTML,
             reply_markup=platform_kb(True, uname, is_admin),
         )
         return
 
-    types_preview = "\n".join(f"  {label}" for label in BOT_TYPE_LABELS.values())
     await update.message.reply_text(
-        "🤖 <b>منصّة بوت أب — اصنع بوت تلغرام بخطوة وحدة</b>\n"
+        "🤖 <b>منصّة إنشاء بوتات الرسائل</b>\n"
         "━━━━━━━━━━━━━━━\n\n"
-        "اختار نوع بوتك من ٧ أنواع جاهزة، وبيشتغل فوراً بدون أي إعداد تقني 🚀\n\n"
-        f"<b>🧩 الأنواع المتاحة:</b>\n{types_preview}\n\n"
+        "اعمل بوتك الخاص بخطوة وحدة، والناس بتبعتلك رسائل "
+        "بتوصلك وبترد عليهم مباشرة 🔒\n\n"
         "<b>📝 كيف تبدأ:</b>\n"
         "1️⃣ افتح @BotFather واكتب /newbot\n"
         "2️⃣ خد التوكن اللي بيعطيك ياه\n"
-        "3️⃣ ابعتلي التوكن هون واختار النوع\n\n"
+        "3️⃣ ابعتلي التوكن هون\n\n"
+        "وبوتك بيشتغل فوراً 🚀\n\n"
         f"━━━━━━━━━━━━━━━\n👨‍💻 تطوير: {DEVELOPER}",
         parse_mode=ParseMode.HTML,
         reply_markup=platform_kb(False, None, is_admin),
@@ -515,54 +763,22 @@ async def owner_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    own_current_token = DATA["bots"].get(str(uid), {}).get("token")
-    if text in RUNNING and text != own_current_token:
-        await msg.reply_text("⚠️ هالتوكن مستعمل بحساب تاني.")
-        return
-
-    PENDING_TOKEN[uid] = text
-    await msg.reply_text(
-        "🤖 <b>اختر نوع بوتك:</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=type_select_kb(),
-    )
-
-
-async def type_select_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    uid = q.from_user.id
-    key = (q.data or "").split(":", 1)[-1]
-
-    if key not in BOT_TYPE_LABELS:
-        await q.answer()
-        return
-
-    if key not in IMPLEMENTED_BOT_TYPES:
-        await q.answer("🔜 هالنوع لسه قيد التطوير، جرّب 💬 بوت رسائل حالياً.", show_alert=True)
-        return
-
-    token = PENDING_TOKEN.pop(uid, None)
-    if not token:
-        await q.answer("⌛ انتهت صلاحية هالطلب، ابعت التوكن من جديد.", show_alert=True)
-        return
-
-    await q.answer()
-
     old = DATA["bots"].get(str(uid))
-    if old and old.get("token") != token:
+    if old:
         await stop_child_bot(old["token"])
         MSG_MAP.pop(old["token"], None)
 
-    await q.edit_message_text("⏳ عم شغّل بوتك...")
+    if text in RUNNING:
+        await msg.reply_text("⚠️ هالتوكن مستعمل بحساب تاني.")
+        return
 
-    rec = _default_rec(token)
-    rec["bot_type"] = key
-    DATA["bots"][str(uid)] = rec
-    ok, info = await start_child_bot(token, uid, key)
+    status = await msg.reply_text("⏳ عم شغّل بوتك...")
+    DATA["bots"][str(uid)] = _default_rec(text)
+    ok, info = await start_child_bot(text, uid)
 
     if ok:
         persist(uid)
-        await q.edit_message_text(
+        await status.edit_text(
             "✅ <b>تم بنجاح!</b>\n"
             "━━━━━━━━━━━━━━━\n"
             f"بوتك @{info} صار شغّال 🎉\n\n"
@@ -575,7 +791,7 @@ async def type_select_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         remove_record(uid)
-        await q.edit_message_text(
+        await status.edit_text(
             "❌ ما قدرت شغّل البوت.\n"
             f"<b>السبب:</b> {esc(info)}\n\n"
             "تأكد إنك ناسخ التوكن كامل من @BotFather.",
@@ -612,8 +828,7 @@ async def _send_admin_stats(bot, to_id):
             except Exception:
                 pass
         ucount = len(rec.get("users", {}))
-        btype = BOT_TYPE_LABELS.get(rec.get("bot_type"), rec.get("bot_type") or "؟")
-        lines.append(f"• <code>{owner_id}</code> — {uname} ({btype}, {ucount} مستخدم)")
+        lines.append(f"• <code>{owner_id}</code> — {uname} ({ucount} مستخدم)")
         shown += 1
 
     await bot.send_message(chat_id=to_id, text="\n".join(lines), parse_mode=ParseMode.HTML)
@@ -644,7 +859,6 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     bots = DATA["bots"]
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     status = await update.message.reply_text(f"⏳ عم ابعت لـ {len(bots)} مستخدم...")
     sent, failed = 0, 0
     for owner_id in list(bots.keys()):
@@ -667,7 +881,6 @@ def build_owner_app():
     app.add_handler(CommandHandler("stats", admin_stats))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CallbackQueryHandler(owner_callbacks, pattern="^(delete_bot|admin_stats|admin_bc_hint)$"))
-    app.add_handler(CallbackQueryHandler(type_select_cb, pattern="^type:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, owner_message))
     return app
 
@@ -695,10 +908,9 @@ def start_web_server():
 # ==================================================================
 async def restore_bots():
     for owner_id, rec in list(DATA["bots"].items()):
-        bot_type = rec.get("bot_type") or "messages"
-        ok, info = await start_child_bot(rec["token"], int(owner_id), bot_type)
+        ok, info = await start_child_bot(rec["token"], int(owner_id))
         if ok:
-            log.info(f"↻ رجّعت بوت {owner_id} ({bot_type}) (@{info})")
+            log.info(f"↻ رجّعت بوت {owner_id} (@{info})")
         else:
             log.warning(f"⚠️ ما قدرت أرجّع بوت {owner_id}: {info}")
 
@@ -714,18 +926,6 @@ async def run():
 
     owner_app = build_owner_app()
     await owner_app.initialize()
-    try:
-        await owner_app.bot.set_my_commands([BotCommand("start", "ابدأ / اصنع بوتك")])
-        await owner_app.bot.set_my_commands(
-            [
-                BotCommand("start", "ابدأ / اصنع بوتك"),
-                BotCommand("stats", "📊 إحصائيات المنصّة"),
-                BotCommand("broadcast", "📢 رسالة جماعية لكل الأصحاب"),
-            ],
-            scope=BotCommandScopeChat(chat_id=ADMIN_ID),
-        )
-    except Exception:
-        pass
     await owner_app.start()
     await owner_app.updater.start_polling(drop_pending_updates=True)
     log.info("✅ البوت الرئيسي شغّال")
