@@ -24,7 +24,14 @@ import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    BotCommand,
+    BotCommandScopeDefault,
+    BotCommandScopeChat,
+)
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
@@ -393,10 +400,22 @@ async def child_panel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # نرتّب حسب عدد الرسائل
             items = sorted(users.items(), key=lambda x: x[1].get("count", 0), reverse=True)
             lines = []
-            for i, (uid, info) in enumerate(items[:40], 1):
-                lines.append(f"{i}. {esc(info.get('name','?'))} — <code>{uid}</code> ({info.get('count',0)} رسالة)")
-            if len(items) > 40:
-                lines.append(f"... و{len(items)-40} غيرهم")
+            for i, (uid, info) in enumerate(items[:30], 1):
+                # نحاول نجيب اليوزر مباشرة
+                handle = None
+                try:
+                    chat = await context.bot.get_chat(int(uid))
+                    if chat.username:
+                        handle = f"@{chat.username}"
+                    elif chat.full_name:
+                        handle = esc(chat.full_name)
+                except Exception:
+                    pass
+                if not handle:
+                    handle = esc(info.get("name", "?"))
+                lines.append(f"{i}. {handle} ({info.get('count',0)} رسالة)")
+            if len(items) > 30:
+                lines.append(f"... و{len(items)-30} غيرهم")
             body = "\n".join(lines)
         await q.edit_message_text(
             f"👥 <b>مستخدمين بوتك ({len(users)})</b>\n━━━━━━━━━━━━━━━\n{body}",
@@ -631,6 +650,19 @@ async def start_child_bot(token, owner_id):
         me = await app.bot.get_me()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
+        # الأوامر الإدارية تظهر لصاحب البوت فقط، والزوار ما يشوفوا شي
+        try:
+            await app.bot.set_my_commands([], scope=BotCommandScopeDefault())
+            await app.bot.set_my_commands(
+                [
+                    BotCommand("start", "لوحة التحكم"),
+                    BotCommand("unblock", "فك حظر شخص"),
+                    BotCommand("unmute", "فك كتم شخص"),
+                ],
+                scope=BotCommandScopeChat(chat_id=int(owner_id)),
+            )
+        except Exception:
+            pass
     except Exception as e:
         try:
             await app.shutdown()
@@ -940,6 +972,19 @@ async def run():
     await owner_app.initialize()
     await owner_app.start()
     await owner_app.updater.start_polling(drop_pending_updates=True)
+    # أوامر الأدمن تظهر للأدمن فقط
+    try:
+        await owner_app.bot.set_my_commands([BotCommand("start", "ابدأ")], scope=BotCommandScopeDefault())
+        await owner_app.bot.set_my_commands(
+            [
+                BotCommand("start", "ابدأ"),
+                BotCommand("stats", "إحصائيات المنصة"),
+                BotCommand("broadcast", "رسالة جماعية"),
+            ],
+            scope=BotCommandScopeChat(chat_id=ADMIN_ID),
+        )
+    except Exception:
+        pass
     log.info("✅ البوت الرئيسي شغّال")
 
     await restore_bots()
